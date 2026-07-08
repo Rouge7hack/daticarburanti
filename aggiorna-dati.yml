@@ -1,0 +1,40 @@
+name: Aggiorna dati carburanti MIMIT
+
+on:
+  schedule:
+    # 05:00 UTC = 06:00 (ora solare) o 07:00 (ora legale) in Italia
+    - cron: "0 5 * * *"
+  workflow_dispatch: {}   # permette di lanciarlo anche a mano dal tab "Actions"
+
+permissions:
+  contents: write
+
+jobs:
+  update-data:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Scarica i CSV ufficiali dal MIMIT
+        run: |
+          mkdir -p data
+          curl -sSL --fail -o data/prezzo_alle_8.csv "https://www.mimit.gov.it/images/exportCSV/prezzo_alle_8.csv"
+          curl -sSL --fail -o data/anagrafica_impianti_attivi.csv "https://www.mimit.gov.it/images/exportCSV/anagrafica_impianti_attivi.csv"
+
+      - name: Verifica che i file non siano vuoti
+        run: |
+          test -s data/prezzo_alle_8.csv
+          test -s data/anagrafica_impianti_attivi.csv
+
+      - name: Commit e push (solo se ci sono cambiamenti)
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/
+          if git diff --staged --quiet; then
+            echo "Nessun cambiamento nei dati, niente da committare."
+          else
+            git commit -m "Aggiorna dati carburanti $(date -u +'%Y-%m-%d %H:%M UTC')"
+            git push
+          fi
