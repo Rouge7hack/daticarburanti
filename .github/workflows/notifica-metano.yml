@@ -1,0 +1,33 @@
+name: Notifica metano giornaliera
+
+on:
+  schedule:
+    # 07:30 UTC = 08:30 (ora solare) o 09:30 (ora legale) in Italia
+    - cron: "30 5 * * *"
+  workflow_dispatch: {}   # permette di lanciarlo anche a mano dal tab "Actions"
+
+permissions:
+  contents: read
+
+jobs:
+  notifica:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Imposta Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Installa dipendenze
+        run: pip install pandas requests
+
+      - name: Esegui lo script e invia la notifica
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          HOME_LAT: ${{ secrets.HOME_LAT }}
+          HOME_LON: ${{ secrets.HOME_LON }}
+        run: python metano_bot.py
