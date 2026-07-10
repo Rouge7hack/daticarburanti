@@ -2,7 +2,7 @@ name: Notifica metano giornaliera
 
 on:
   schedule:
-    # 07:30 UTC = 08:30 (ora solare) o 09:30 (ora legale) in Italia
+    # 07:40 UTC = 08:40 (ora solare) o 9:40 (ora legale) in Italia
     - cron: "30 5 * * *"
   workflow_dispatch: {}   # permette di lanciarlo anche a mano dal tab "Actions"
 
