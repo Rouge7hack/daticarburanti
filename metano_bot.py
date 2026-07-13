@@ -1,9 +1,8 @@
 """
-Bot Telegram - Migliori distributori di METANO vicino a casa
-Dati: CSV ufficiali del MIMIT, resi disponibili via GitHub Actions
-(per aggirare la whitelist di rete degli account PythonAnywhere gratuiti)
+Bot Telegram - Migliori distributori (metano, benzina, ...) vicino a casa
+Dati: CSV ufficiali del MIMIT, scaricati direttamente da GitHub Actions.
 
-Pensato per girare come "Scheduled Task" giornaliero su PythonAnywhere.
+Pensato per girare come workflow schedulato su GitHub Actions.
 """
 
 import html
@@ -36,12 +35,29 @@ if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID or not _HOME_LAT_RAW or not _H
 HOME_LAT = float(_HOME_LAT_RAW)
 HOME_LON = float(_HOME_LON_RAW)
 
-CARBURANTE = "Metano"          # come compare in descCarburante nel CSV MIMIT
-CONSUMO_KG_100KM = 3.8          # il tuo consumo medio dichiarato
+RAGGIO_RICERCA_KM = 15           # entro quanti km cercare i distributori
+NUM_RISULTATI = 5                # quanti distributori mostrare per ciascun carburante
 
-RAGGIO_RICERCA_KM = 10           # entro quanti km cercare i distributori
-TANK_SIZE_KG = 16                # kg assunti per un "pieno" tipico (per stimare il costo della deviazione)
-NUM_RISULTATI = 5                # quanti distributori mostrare nel messaggio
+# Un blocco per ogni carburante da cercare. "nome_csv" deve corrispondere
+# esattamente al valore di descCarburante nel CSV del MIMIT.
+CARBURANTI = [
+    {
+        "nome_csv": "Metano",
+        "etichetta": "METANO",
+        "unita": "kg",
+        "consumo_100km": 3.8,     # kg / 100km
+        "tank_size": 10,          # kg assunti per un "pieno" tipico
+        "emoji": "⛽",
+    },
+    {
+        "nome_csv": "Benzina",
+        "etichetta": "BENZINA",
+        "unita": "l",
+        "consumo_100km": 7.5,     # litri / 100km
+        "tank_size": 50,          # litri del serbatoio
+        "emoji": "🚗",
+    },
+]
 
 URL_PREZZI = "https://www.mimit.gov.it/images/exportCSV/prezzo_alle_8.csv"
 URL_ANAGRAFICA = "https://www.mimit.gov.it/images/exportCSV/anagrafica_impianti_attivi.csv"
@@ -107,20 +123,14 @@ def haversine_km(lat1, lon1, lat2, lon2) -> float:
     return 2 * r * math.asin(math.sqrt(a))
 
 
-def trova_migliori_distributori() -> pd.DataFrame:
-    prezzi = scarica_csv(URL_PREZZI)
-    anagrafica = scarica_csv(URL_ANAGRAFICA)
-
-    # Uniforma i nomi delle colonne (nei due file l'id impianto ha maiuscole diverse)
-    prezzi = prezzi.rename(columns={c: c.strip() for c in prezzi.columns})
-    anagrafica = anagrafica.rename(columns={c: c.strip() for c in anagrafica.columns})
-    prezzi = prezzi.rename(columns={"idimpianto": "idImpianto"})
-
-    # Filtra solo il metano
-    metano = prezzi[prezzi["descCarburante"].str.strip().str.lower() == CARBURANTE.lower()].copy()
+def trova_migliori_distributori(prezzi: pd.DataFrame, anagrafica: pd.DataFrame, carburante: dict) -> pd.DataFrame:
+    # Filtra solo il carburante richiesto
+    filtrato = prezzi[
+        prezzi["descCarburante"].str.strip().str.lower() == carburante["nome_csv"].lower()
+    ].copy()
 
     # Unisci con l'anagrafica per avere indirizzo e coordinate
-    df = metano.merge(anagrafica, on="idImpianto", how="inner")
+    df = filtrato.merge(anagrafica, on="idImpianto", how="inner")
 
     # Scarta impianti senza coordinate valide
     df = df.dropna(subset=["Latitudine", "Longitudine", "prezzo"])
@@ -137,27 +147,27 @@ def trova_migliori_distributori() -> pd.DataFrame:
     if df.empty:
         return df
 
-    # Costo "effettivo" stimato: prezzo al kg + il costo del carburante bruciato
+    # Costo "effettivo" stimato: prezzo unitario + il costo del carburante bruciato
     # per andare e tornare dal distributore, spalmato su un pieno tipico.
     # Questo penalizza i distributori economici ma troppo lontani.
-    df["costo_deviazione_eur"] = (
-        df["distanza_km"] * 2 * (CONSUMO_KG_100KM / 100) * df["prezzo"]
-    )
-    df["prezzo_effettivo"] = df["prezzo"] + (df["costo_deviazione_eur"] / TANK_SIZE_KG)
+    consumo_100km = carburante["consumo_100km"]
+    tank_size = carburante["tank_size"]
+    df["costo_deviazione_eur"] = df["distanza_km"] * 2 * (consumo_100km / 100) * df["prezzo"]
+    df["prezzo_effettivo"] = df["prezzo"] + (df["costo_deviazione_eur"] / tank_size)
 
     df = df.sort_values("prezzo_effettivo").head(NUM_RISULTATI)
     return df
 
 
-def formatta_messaggio(df: pd.DataFrame) -> str:
-    oggi = datetime.now().strftime("%d/%m/%Y")
+def formatta_sezione(df: pd.DataFrame, carburante: dict) -> str:
+    unita = carburante["unita"]
     if df.empty:
         return (
-            f"⛽ Metano vicino a te - {oggi}\n\n"
-            f"Nessun distributore di metano trovato entro {RAGGIO_RICERCA_KM} km."
+            f"{carburante['emoji']} <b>{carburante['etichetta']}</b>\n"
+            f"Nessun distributore trovato entro {RAGGIO_RICERCA_KM} km."
         )
 
-    righe = [f"⛽ <b>Migliori distributori di METANO</b> - {oggi}\n"]
+    righe = [f"{carburante['emoji']} <b>{carburante['etichetta']}</b>"]
     for i, (_, r) in enumerate(df.iterrows(), start=1):
         nome = str(r.get("Nome Impianto", "")).strip() or str(r.get("Gestore", "")).strip()
         indirizzo = str(r.get("Indirizzo", "")).strip()
@@ -172,10 +182,17 @@ def formatta_messaggio(df: pd.DataFrame) -> str:
         righe.append(
             f"{i}. <b>{nome_e}</b> — {bandiera_e}\n"
             f"   📍 <a href=\"{maps_url}\">{indirizzo_e}</a> ({r['distanza_km']:.1f} km)\n"
-            f"   💶 {r['prezzo']:.3f} €/kg (prezzo effettivo stimato: {r['prezzo_effettivo']:.3f} €/kg)\n"
+            f"   💶 {r['prezzo']:.3f} €/{unita} "
+            f"(prezzo effettivo stimato: {r['prezzo_effettivo']:.3f} €/{unita})"
         )
-    righe.append(f"\nConsumo usato per il calcolo: {CONSUMO_KG_100KM} kg/100km")
+    righe.append(f"Consumo usato per il calcolo: {carburante['consumo_100km']} {unita}/100km")
     return "\n".join(righe)
+
+
+def formatta_messaggio(sezioni: list[str]) -> str:
+    oggi = datetime.now().strftime("%d/%m/%Y")
+    testa = f"<b>Distributori consigliati - {oggi}</b>\n"
+    return testa + "\n\n".join(sezioni)
 
 
 def invia_messaggio_telegram(testo: str) -> None:
@@ -197,8 +214,20 @@ def invia_messaggio_telegram(testo: str) -> None:
 
 def main():
     try:
-        df = trova_migliori_distributori()
-        messaggio = formatta_messaggio(df)
+        prezzi = scarica_csv(URL_PREZZI)
+        anagrafica = scarica_csv(URL_ANAGRAFICA)
+
+        # Uniforma i nomi delle colonne (nei due file l'id impianto ha maiuscole diverse)
+        prezzi = prezzi.rename(columns={c: c.strip() for c in prezzi.columns})
+        anagrafica = anagrafica.rename(columns={c: c.strip() for c in anagrafica.columns})
+        prezzi = prezzi.rename(columns={"idimpianto": "idImpianto"})
+
+        sezioni = []
+        for carburante in CARBURANTI:
+            df = trova_migliori_distributori(prezzi, anagrafica, carburante)
+            sezioni.append(formatta_sezione(df, carburante))
+
+        messaggio = formatta_messaggio(sezioni)
         invia_messaggio_telegram(messaggio)
         print("Messaggio inviato correttamente.")
     except Exception as e:
